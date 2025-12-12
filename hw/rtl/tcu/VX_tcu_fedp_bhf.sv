@@ -72,6 +72,24 @@ module VX_tcu_fedp_bhf #(
 
     wire [32:0] mult_result [TCK];
 
+    //always @(posedge clk) begin
+    //    if (enable) begin
+    //        integer i;
+    //        $display("Time %0t | a_row:", $time);
+    //        for (i = 0; i < N; i = i + 1) begin
+    //            $write(" %0h", a_row[i]);
+    //        end
+    //        $display(""); // new line
+//
+    //        $display("Time %0t | b_col:", $time);
+    //        for (i = 0; i < N; i = i + 1) begin
+    //            $write(" %0h", b_col[i]);
+    //        end
+    //        $display(""); // new line
+    //    end
+    //end
+    
+
     for (genvar i = 0; i < TCK; i++) begin : g_prod
         wire [32:0] mult_result_fp16;
         wire [32:0] mult_result_bf16;
@@ -122,8 +140,9 @@ module VX_tcu_fedp_bhf #(
         always_comb begin
             case(fmt_s_delayed)
                 3'd1: mult_result_mux = mult_result_fp16;
-                3'd2: mult_result_mux = mult_result_bf16;
-                default: mult_result_mux = 'x;
+                3'd2: mult_result_mux = mult_result_fp16;
+                3'd5: mult_result_mux = mult_result_bf16;
+                default: mult_result_mux = mult_result_fp16;
             endcase
         end
 

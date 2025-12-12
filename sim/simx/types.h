@@ -201,6 +201,10 @@ inline std::ostream &operator<<(std::ostream &os, const AluType& type) {
 
 ///////////////////////////////////////////////////////////////////////////////
 
+enum class NopType {
+    NOP
+};
+
 enum class BrType {
   BR,
   JAL,
@@ -641,6 +645,7 @@ inline std::ostream &operator<<(std::ostream &os, const VpuOpType& type) {
 
 enum class TcuType {
   WMMA,
+  NOP
 };
 
 struct IntrTcuArgs {

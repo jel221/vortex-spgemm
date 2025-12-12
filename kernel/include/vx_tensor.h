@@ -15,6 +15,7 @@
 
 #include <tensor_cfg.h>
 #include <vx_intrinsics.h>
+#include <vx_print.h>
 
 namespace vortex {
 namespace tensor {
@@ -126,11 +127,11 @@ namespace detail {
 template <uint32_t NT, // number of threads per warp
           typename It, // input type (A,B)
           typename Ot> // output type (C,D)
-struct wmma_context {
+struct wmma_context {    
 private:
-  using cfg = wmma_config_t<NT>;
+  using cfg = wmma_config_t<NT, It, Ot>;
 
-  enum frag_use_t { matrix_a, matrix_b, accumulator };
+  enum frag_use_t { matrix_a, sparse_matrix_a, matrix_b, accumulator };
 
   using vreg_t = float;
 
@@ -155,9 +156,10 @@ public:
   static constexpr uint32_t i_ratio = sizeof(vreg_t) / sizeof(input_t);
   static constexpr uint32_t tileM = cfg::tileM;
   static constexpr uint32_t tileN = cfg::tileN;
-  static constexpr uint32_t tileK = cfg::tileK * i_ratio;
+  static constexpr uint32_t tileK = cfg::tileK;
 
   using fragment_a   = fragment_t<matrix_a, input_t, cfg::NRA>;
+  using sparse_fragment_a   = fragment_t<sparse_matrix_a, input_t, cfg::NRA>;
   using fragment_b   = fragment_t<matrix_b, input_t, cfg::NRB>;
   using fragment_acc = fragment_t<accumulator, output_t, cfg::NRC>;
 
@@ -187,9 +189,6 @@ public:
       uint32_t block_col = (lane_in_blk % cfg::tcK) * i_ratio;
       uint32_t m_stride  = cfg::a_sub_blocks * cfg::tcM;
       uint32_t k_stride  = cfg::tcK * i_ratio;
-      if constexpr (src_layout == col_major) {
-        std::swap(block_row, block_col);
-      }
       auto base = reinterpret_cast<const input_t*>(src) + block_row * ldm + block_col;
       detail::unroll_for<Frag::NR>([&](auto r) {
         uint32_t block_m  = r / cfg::k_steps;
@@ -403,6 +402,267 @@ public:
       fragD.data = {fd0, fd1, fd2, fd3, fd4, fd5, fd6, fd7};
     }
   }
+
+  /* ============================================================================ */
+  /* ========================== SPARSE FUNCTIONS BEGIN ========================== */
+  /* ============================================================================ */
+
+  template <mem_layout src_layout = row_major, typename Frag>
+  static __attribute__((always_inline)) void load_sparse_matrix_sync(Frag &dst, const void *src_, size_t ldm) {
+    static_assert(Frag::Use == sparse_matrix_a, "This is a sparse matrix A function!");
+
+    //vx_printf("NRA %d \n", Frag::NR);
+    uint32_t lane = vx_thread_id();
+
+    uint32_t tcK = cfg::tcK / 2; // Readjusted for sparsity
+
+    // Which (row, col) are we in WITHIN the tensor core dimensions?
+    // lane: 0 1 2 3 4 5 6 7
+    // core_row = 0 1; core_col = 0 1 2 3
+    uint32_t core_row = lane / (tcK / 2);
+    uint32_t core_col = lane % (tcK / 2);
+
+    // How many elements should I skip along the row/col dimensions?
+    uint32_t row_stride = cfg::tcM * ldm;
+    uint32_t col_stride = tcK;
+    
+    // What is the address of the first (top-left-most tile) element?
+    auto src = reinterpret_cast<const input_t*>(src_);
+    
+    // For NR (which is the number of tensor core tiles in this "tile"):
+    detail::unroll_for<Frag::NR>([&](auto r) {
+      uint32_t tile_row_idx = r / cfg::k_steps;
+      uint32_t tile_col_idx = r % cfg::k_steps;
+
+      // What is the address of the tile?
+      uint32_t tile_row = tile_row_idx * row_stride;
+      uint32_t tile_col = tile_col_idx * col_stride;
+      auto tile = src + tile_row + tile_col;
+
+      // What is the appropriate element for this tile for this lane?
+      auto ptr = tile + core_row * ldm + core_col * 2;
+      //vx_printf("ptr %x \n", ptr);
+
+      dst.data[r] = *(reinterpret_cast<const float*>(ptr));
+    });
+
+  }
+
+  template <mem_layout src_layout = row_major, typename Frag>
+  static __attribute__((always_inline)) void load_dense_matrix_sync(Frag &dst, const void *src_, size_t ldm) {
+    uint32_t lane = vx_thread_id();
+    static_assert(Frag::Use == matrix_b, "This is a dense matrix B function only meant to be used for SPGEMM!");
+    
+      // Which (row, col) are we in WITHIN the tensor core dimensions?
+    // lane: 0 1 2 3 4 5 6 7
+    // core_row = 0 1; core_col = 0 1 2 3
+    uint32_t tcN = cfg::tcN;
+    uint32_t core_row = lane / (tcN / 2); // Hint: This 2 is i_ratio
+    uint32_t core_col = lane % (tcN / 2);
+
+      // How many elements should I skip along the row/col dimensions?
+    uint32_t row_stride = cfg::tcK * ldm;
+    uint32_t col_stride = tcN;
+
+    auto src = reinterpret_cast<const input_t*>(src_);
+
+    detail::unroll_for<Frag::NR>([&](auto r) {
+      uint32_t tile_row_idx = r / cfg::n_steps;
+      uint32_t tile_col_idx = r % cfg::n_steps;
+
+      // What is the address of the tile?
+      uint32_t tile_row = tile_row_idx * row_stride;
+      uint32_t tile_col = tile_col_idx * col_stride;
+      auto tile = src + tile_row + tile_col;
+
+      // What is the appropriate element for this tile for this lane?
+      auto ptr = tile + core_row * ldm + core_col;
+      //input_t v0 = *ptr;
+      //input_t v1 = *(ptr + 1);
+  //
+      //union U32F {
+      //  uint32_t u;
+      //  float    f;
+      //};
+  //
+      //U32F un;
+      //uint32_t packed = (uint32_t(v1) << 16) | uint32_t(v0);
+      //un.u = packed;
+  
+      dst.data[r] = *(reinterpret_cast<const float*>(ptr));
+      }
+    );  
+    
+  }
+
+
+  template <typename FragD, typename FragA, typename FragB, typename FragC>
+  static __attribute__((always_inline)) void mma_sparse_sync(FragD &fragD, const FragA &fragA, const FragB &fragB, const FragC &fragC, const uint8_t pattern) {
+    static_assert(FragA::Use == sparse_matrix_a, "A must be sparse");
+    static_assert(FragB::Use == matrix_b, "B must be matrix_b");
+    static_assert(FragC::Use == accumulator, "C must be accumulator");
+    static_assert(FragD::Use == accumulator, "D must be accumulator");
+
+    register int sps __asm__("a7")  = pattern;
+
+    // fragA: caller-saved registers (f0-f7)
+    register float fa0 __asm__("f0")  = fragA.data[0];
+    register float fa1 __asm__("f1")  = fragA.data[1];
+    register float fa2 __asm__("f2")  = fragA.data[2];
+    register float fa3 __asm__("f3")  = fragA.data[3];
+    register float fa4 __asm__("f4")  = fragA.data[4];
+    register float fa5 __asm__("f5")  = fragA.data[5];
+    register float fa6 __asm__("f6")  = fragA.data[6];
+    register float fa7 __asm__("f7")  = fragA.data[7];
+
+    //vx_printf("f0 dat %p \n", fragA.data[0]);
+    //vx_printf("f1 dat %p \n", fragA.data[1]);
+    //vx_printf("f2 dat %p \n", fragA.data[2]);
+    //vx_printf("f3 dat %p \n", fragA.data[3]);
+
+    
+
+    if constexpr (FragB::NR == 8) {
+      // fragB: caller-saved registers (f10-f17)
+      register float fb0 __asm__("f10") = fragB.data[0];
+      register float fb1 __asm__("f11") = fragB.data[1];
+      register float fb2 __asm__("f12") = fragB.data[2];
+      register float fb3 __asm__("f13") = fragB.data[3];
+      register float fb4 __asm__("f14") = fragB.data[4];
+      register float fb5 __asm__("f15") = fragB.data[5];
+      register float fb6 __asm__("f16") = fragB.data[6];
+      register float fb7 __asm__("f17") = fragB.data[7];
+
+      // fragC: mix of caller-saved (f28-f31) and callee-saved (f18-f21)
+      register float fc0 __asm__("f24") = fragC.data[0];
+      register float fc1 __asm__("f25") = fragC.data[1];
+      register float fc2 __asm__("f26") = fragC.data[2];
+      register float fc3 __asm__("f27") = fragC.data[3];
+      register float fc4 __asm__("f28") = fragC.data[4];
+      register float fc5 __asm__("f29") = fragC.data[5];
+      register float fc6 __asm__("f30") = fragC.data[6];
+      register float fc7 __asm__("f31") = fragC.data[7];
+
+      // Force outputs into accumulator registers
+      register float fd0 __asm__("f24");
+      register float fd1 __asm__("f25");
+      register float fd2 __asm__("f26");
+      register float fd3 __asm__("f27");
+      register float fd4 __asm__("f28");
+      register float fd5 __asm__("f29");
+      register float fd6 __asm__("f30");
+      register float fd7 __asm__("f31");
+
+      // funct3 is now 1, compared to regular wmma which is 0.
+      __asm__ volatile (".insn r %[insn], 1, 2, x%[fmd], x%[fms], x0"
+        : "=f"(fd0), "=f"(fd1), "=f"(fd2), "=f"(fd3), "=f"(fd4), "=f"(fd5), "=f"(fd6), "=f"(fd7)
+        : [insn]"i"(RISCV_CUSTOM0), [fmd]"i"(Ot::id), [fms]"i"(It::id),
+          "f"(fa0), "f"(fa1), "f"(fa2), "f"(fa3), "f"(fa4), "f"(fa5), "f"(fa6), "f"(fa7),
+          "f"(fb0), "f"(fb1), "f"(fb2), "f"(fb3), "f"(fb4), "f"(fb5), "f"(fb6), "f"(fb7),
+          "f"(fc0), "f"(fc1), "f"(fc2), "f"(fc3), "f"(fc4), "f"(fc5), "f"(fc6), "f"(fc7), "i"(sps)
+      );
+
+      // Write results to fragD
+      fragD.data = {fd0, fd1, fd2, fd3, fd4, fd5, fd6, fd7};
+    } else if constexpr (FragB::NR == 16) { 
+      register float fb0  __asm__("f8") = fragB.data[0];
+      register float fb1  __asm__("f9") = fragB.data[1];
+      register float fb2  __asm__("f10") = fragB.data[2];
+      register float fb3  __asm__("f11") = fragB.data[3];
+      register float fb4  __asm__("f12") = fragB.data[4];
+      register float fb5  __asm__("f13") = fragB.data[5];
+      register float fb6  __asm__("f14") = fragB.data[6];
+      register float fb7  __asm__("f15") = fragB.data[7];
+
+      register float fb8  __asm__("f16") = fragB.data[8];
+      register float fb9  __asm__("f17") = fragB.data[9];
+      register float fb10 __asm__("f18") = fragB.data[10];
+      register float fb11 __asm__("f19") = fragB.data[11];
+      register float fb12 __asm__("f20") = fragB.data[12];
+      register float fb13 __asm__("f21") = fragB.data[13];
+      register float fb14 __asm__("f22") = fragB.data[14];
+      register float fb15 __asm__("f23") = fragB.data[15];
+
+      // fragC: mix of caller-saved (f28-f31) and callee-saved (f18-f21)
+      register float fc0 __asm__("f24") = fragC.data[0];
+      register float fc1 __asm__("f25") = fragC.data[1];
+      register float fc2 __asm__("f26") = fragC.data[2];
+      register float fc3 __asm__("f27") = fragC.data[3];
+      register float fc4 __asm__("f28") = fragC.data[4];
+      register float fc5 __asm__("f29") = fragC.data[5];
+      register float fc6 __asm__("f30") = fragC.data[6];
+      register float fc7 __asm__("f31") = fragC.data[7];
+
+      // Force outputs into accumulator registers
+      register float fd0 __asm__("f24");
+      register float fd1 __asm__("f25");
+      register float fd2 __asm__("f26");
+      register float fd3 __asm__("f27");
+      register float fd4 __asm__("f28");
+      register float fd5 __asm__("f29");
+      register float fd6 __asm__("f30");
+      register float fd7 __asm__("f31");
+
+      __asm__ volatile (".insn r %[insn], 2, 2, x0, x17, x0" :
+        : [insn]"i"(RISCV_CUSTOM0)
+      );
+
+      // Encode it here
+      __asm__ volatile (".insn r %[insn], 1, 2, x%[fmd], x%[fms], x0"
+        : "=f"(fd0), "=f"(fd1), "=f"(fd2), "=f"(fd3), "=f"(fd4), "=f"(fd5), "=f"(fd6), "=f"(fd7)
+        : [insn]"i"(RISCV_CUSTOM0), [fmd]"i"(Ot::id), [fms]"i"(It::id),
+          "f"(fa0), "f"(fa1), "f"(fa2), "f"(fa3), "f"(fa4), "f"(fa5), "f"(fa6), "f"(fa7),
+          "f"(fb0), "f"(fb1), "f"(fb2), "f"(fb3), "f"(fb4), "f"(fb5), "f"(fb6), "f"(fb7),
+          "f"(fb8), "f"(fb9), "f"(fb10), "f"(fb11), "f"(fb12), "f"(fb13), "f"(fb14), "f"(fb15),
+          "f"(fc0), "f"(fc1), "f"(fc2), "f"(fc3), "f"(fc4), "f"(fc5), "f"(fc6), "f"(fc7), "f"(sps)
+      );
+
+      // Write results to fragD
+      fragD.data = {fd0, fd1, fd2, fd3, fd4, fd5, fd6, fd7};
+    } else {
+      static_assert(FragB::NR == 4, "Unsupported number of registers for FragB");
+      // fragB: caller-saved registers (f28-f31)
+      register float fb0 __asm__("f28") = fragB.data[0];
+      register float fb1 __asm__("f29") = fragB.data[1];
+      register float fb2 __asm__("f30") = fragB.data[2];
+      register float fb3 __asm__("f31") = fragB.data[3];
+
+      // fragC: mix of caller-saved (f10-f17)
+      register float fc0 __asm__("f10") = fragC.data[0];
+      register float fc1 __asm__("f11") = fragC.data[1];
+      register float fc2 __asm__("f12") = fragC.data[2];
+      register float fc3 __asm__("f13") = fragC.data[3];
+      register float fc4 __asm__("f14") = fragC.data[4];
+      register float fc5 __asm__("f15") = fragC.data[5];
+      register float fc6 __asm__("f16") = fragC.data[6];
+      register float fc7 __asm__("f17") = fragC.data[7];
+
+      // Force outputs into accumulator registers
+      register float fd0 __asm__("f10");
+      register float fd1 __asm__("f11");
+      register float fd2 __asm__("f12");
+      register float fd3 __asm__("f13");
+      register float fd4 __asm__("f14");
+      register float fd5 __asm__("f15");
+      register float fd6 __asm__("f16");
+      register float fd7 __asm__("f17");
+
+      __asm__ volatile (".insn r %[insn], 0, 2, x%[fmd], x%[fms], x0"
+        : "=f"(fd0), "=f"(fd1), "=f"(fd2), "=f"(fd3), "=f"(fd4), "=f"(fd5), "=f"(fd6), "=f"(fd7)
+        : [insn]"i"(RISCV_CUSTOM0), [fmd]"i"(Ot::id), [fms]"i"(It::id),
+          "f"(fa0), "f"(fa1), "f"(fa2), "f"(fa3), "f"(fa4), "f"(fa5), "f"(fa6), "f"(fa7),
+          "f"(fb0), "f"(fb1), "f"(fb2), "f"(fb3),
+          "f"(fc0), "f"(fc1), "f"(fc2), "f"(fc3), "f"(fc4), "f"(fc5), "f"(fc6), "f"(fc7)
+      );
+
+      // Write results to fragD
+      fragD.data = {fd0, fd1, fd2, fd3, fd4, fd5, fd6, fd7};
+    }
+  }
+
+  /* ============================================================================ */
+  /* =========================== SPARSE FUNCTIONS END =========================== */
+  /* ============================================================================ */
 };
 
 } // namespace tensor

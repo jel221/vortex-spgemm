@@ -27,6 +27,18 @@ module VX_tcu_uops import
     input  wire      next,
     output reg       done
 );
+    //initial begin
+    //    $display("TCU_M_STEPS = %0d", TCU_M_STEPS);
+    //    $display("TCU_N_STEPS = %0d", TCU_N_STEPS);
+    //    $display("TCU_K_STEPS = %0d", TCU_K_STEPS);
+    //    $display("TCU_TILE_M = %0d", TCU_TILE_M);
+    //    $display("TCU_TILE_N = %0d", TCU_TILE_N);
+    //    $display("TCU_TILE_K = %0d", TCU_TILE_K);
+    //    $display("TCU_TC_M = %0d", TCU_TC_M);
+    //    $display("TCU_TC_N = %0d", TCU_TC_N);
+    //    $display("TCU_TC_K = %0d", TCU_TC_K);
+    //end
+
     localparam CTR_W = $clog2(TCU_UOPS);
 
     localparam LG_N = $clog2(TCU_N_STEPS);
@@ -115,6 +127,8 @@ module VX_tcu_uops import
                 counter <= counter + ((TCU_UOPS > 1) ? 1 : 0);
                 done <= (counter == CTR_W'(TCU_UOPS-2));
                 busy <= ~done;
+
+                //$display("UOP %0d: rs1=%0d, rs2=%0d, rs3=%0d", counter, rs1, rs2, rs3);
             end
         end
     end

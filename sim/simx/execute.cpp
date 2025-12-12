@@ -122,6 +122,7 @@ instr_trace_t* Emulator::execute(const Instr &instr, uint32_t wid) {
   auto rsrc0  = instr.getSrcReg(0);
   auto rsrc1  = instr.getSrcReg(1);
   auto rsrc2  = instr.getSrcReg(2);
+  auto af     = instr.getAfSrcReg(); // equivalent to getSrcReg(3).
 
   auto num_threads = arch_.num_threads();
 
@@ -141,6 +142,7 @@ instr_trace_t* Emulator::execute(const Instr &instr, uint32_t wid) {
   std::vector<reg_data_t> rs1_data;
   std::vector<reg_data_t> rs2_data;
   std::vector<reg_data_t> rs3_data;
+  std::vector<reg_data_t> af_data;
 
   DP(1, "Instr: " << instr << ", cid=" << core_->id() << ", wid=" << wid << ", tmask=" << warp.tmask
          << ", PC=0x" << std::hex << warp.PC << std::dec << " (#" << instr.getUUID() << ")");
@@ -149,6 +151,7 @@ instr_trace_t* Emulator::execute(const Instr &instr, uint32_t wid) {
   if (rsrc0.type != RegType::None) fetch_registers(rs1_data, wid, 0, rsrc0);
   if (rsrc1.type != RegType::None) fetch_registers(rs2_data, wid, 1, rsrc1);
   if (rsrc2.type != RegType::None) fetch_registers(rs3_data, wid, 2, rsrc2);
+  if (af.type != RegType::None)    fetch_registers(af_data, wid, 3, af);
 
   uint32_t thread_start = 0;
   for (; thread_start < num_threads; ++thread_start) {
@@ -1458,8 +1461,10 @@ instr_trace_t* Emulator::execute(const Instr &instr, uint32_t wid) {
         auto trace_data = std::make_shared<TensorUnit::ExeTraceData>();
         trace->data = trace_data;
         assert(warp.tmask.count() == num_threads);
-        tensor_unit_->wmma(wid, tpuArgs.fmt_s, tpuArgs.fmt_d, tpuArgs.step_m, tpuArgs.step_n, rs1_data, rs2_data, rs3_data, rd_data, trace_data.get());
+        tensor_unit_->wmma(wid, tpuArgs.fmt_s, tpuArgs.fmt_d, tpuArgs.step_m, tpuArgs.step_n, rs1_data, rs2_data, rs3_data, af_data, rd_data, trace_data.get());
         rd_write = true;
+      } break;
+      case TcuType::NOP: {
       } break;
       default:
         std::abort();

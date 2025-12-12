@@ -133,7 +133,9 @@ public:
   using Ptr = std::shared_ptr<Instr>;
 
   enum {
-    MAX_REG_SOURCES = 3
+    MAX_REG_SOURCES = 3,
+    MAX_SPARSE_SOURCES = 4 + 1 + 8 + 8, // 4 for A, 1 for encoding, 8 for B, 8 for C
+    MAX_SPARSE_DESTS = 8
   };
 
   Instr(uint64_t uuid, FUType fu_type = FUType::ALU)
@@ -161,6 +163,32 @@ public:
     rsrc_[index] = { type, srcReg};
   }
 
+  void setAfSrcReg(uint32_t srcReg, RegType type) {
+    rsrc_[3] = { type, srcReg };
+  }
+
+  //void setSparseSrcReg(uint32_t index, uint32_t srcReg, RegType type) {
+  //  if (index < MAX_SPARSE_SOURCES) {
+  //    rsrc_sparse_[index] = { type, srcReg };
+  //  }
+  //}
+//
+  //void setSparseDestReg(uint32_t index, uint32_t destReg, RegType type) {
+  //  if (index < MAX_SPARSE_DESTS) {
+  //    rdest_sparse_[index] = { type, destReg };
+  //  }
+  //}
+//
+  //RegOpd getSparseSrcReg(uint32_t i) const { 
+  //  if (i >= MAX_SPARSE_SOURCES) return {}; // Return empty/default if out of bounds
+  //  return rsrc_sparse_[i]; 
+  //}
+//
+  //RegOpd getSparseDestReg(uint32_t i) const {
+  //  if (i >= MAX_SPARSE_DESTS) return {}; 
+  //  return rdest_sparse_[i];
+  //}
+
   FUType getFUType() const { return fu_type_; }
 
   OpType getOpType() const { return op_type_; }
@@ -168,6 +196,8 @@ public:
   const IntrArgs& getArgs() const { return args_; }
 
   RegOpd getSrcReg(uint32_t i) const { return rsrc_[i]; }
+
+  RegOpd getAfSrcReg() const { return rsrc_[3]; }
 
   RegOpd getDestReg() const { return rdest_; }
 
@@ -179,8 +209,12 @@ private:
   FUType   fu_type_;
   OpType   op_type_;
   IntrArgs args_;
-  RegOpd   rsrc_[MAX_REG_SOURCES];
+  RegOpd   rsrc_[MAX_REG_SOURCES + 1]; // Toy example. Let's say we have an extra register to encode the sparsity.
+  //RegOpd   rsrc_sparse_[MAX_SPARSE_SOURCES]; <-- Work in progress.
+  
   RegOpd   rdest_;
+  //RegOpd   rdest_sparse_[MAX_SPARSE_DESTS]; <-- Work in progress.
+  // 8 for D, same as C
 
   friend std::ostream &operator<<(std::ostream &, const Instr &);
 };

@@ -24,6 +24,7 @@ package VX_tcu_pkg;
     localparam TCU_NT = `NUM_THREADS;
     localparam TCU_NR = 8;
     localparam TCU_DP = 0;
+    localparam SPARSE = 1;
 
     // Supported data types
     localparam TCU_FP32_ID = 0;
@@ -43,7 +44,8 @@ package VX_tcu_pkg;
 
     localparam TCU_TILE_M = 1 << TCU_TILE_EM;
     localparam TCU_TILE_N = 1 << TCU_TILE_EN;
-    localparam TCU_TILE_K = TCU_TILE_CAP / ((TCU_TILE_M > TCU_TILE_N) ? TCU_TILE_M : TCU_TILE_N);
+    localparam TCU_TILE_K = TCU_TILE_CAP / ((TCU_TILE_M > TCU_TILE_N) ? TCU_TILE_M : TCU_TILE_N) * ((SPARSE == 1) ? 2 : 1);
+    // This thing doesn't matter, because it's not used.
 
     // Block dimensions
     localparam TCU_BLOCK_CAP = TCU_NT;
@@ -58,7 +60,7 @@ package VX_tcu_pkg;
     // Step counts
     localparam TCU_M_STEPS = TCU_TILE_M / TCU_TC_M;
     localparam TCU_N_STEPS = TCU_TILE_N / TCU_TC_N;
-    localparam TCU_K_STEPS = TCU_TILE_K / TCU_TC_K;
+    localparam TCU_K_STEPS = TCU_TILE_K / TCU_TC_K / 2;
 
     // A micro-tiling
     localparam TCU_A_BLOCK_SIZE = TCU_TC_M * TCU_TC_K;
@@ -66,17 +68,18 @@ package VX_tcu_pkg;
 
     // B micro-tiling
     localparam TCU_B_BLOCK_SIZE = TCU_TC_K * TCU_TC_N;
-    localparam TCU_B_SUB_BLOCKS = TCU_BLOCK_CAP / TCU_B_BLOCK_SIZE;
+    localparam TCU_B_SUB_BLOCKS = TCU_BLOCK_CAP / 2 / TCU_B_BLOCK_SIZE;
 
     // Register counts
     //localparam TCU_NRA = (TCU_TILE_M * TCU_TILE_K) / TCU_NT;
-    localparam TCU_NRB = (TCU_TILE_N * TCU_TILE_K) / TCU_NT;
+    //localparam TCU_NRB = (TCU_TILE_N * TCU_TILE_K) / TCU_NT;
     //localparam TCU_NRC = (TCU_TILE_M * TCU_TILE_N) / TCU_NT;
 
     // Register base addresses
     localparam TCU_RA = 0;
-    localparam TCU_RB = (TCU_NRB == 4) ? 28 : 10;
-    localparam TCU_RC = (TCU_NRB == 4) ? 10 : 24;
+    localparam TCU_RB = 8;
+    localparam TCU_RC = 24;
+    
 
     localparam TCU_UOPS = TCU_M_STEPS * TCU_N_STEPS * TCU_K_STEPS;
 
@@ -103,6 +106,20 @@ package VX_tcu_pkg;
         case (INST_TCU_BITS'(op_type))
             INST_TCU_WMMA: begin
                 `TRACE(level, ("WMMA."));
+                trace_fmt(level, op_args.tcu.fmt_s);
+                `TRACE(level, ("."));
+                trace_fmt(level, op_args.tcu.fmt_d);
+                `TRACE(level, (".%0d.%0d", op_args.tcu.step_m, op_args.tcu.step_n));
+            end
+            INST_TCU_SP_WMMA: begin
+                `TRACE(level, ("SP_WMMA."));
+                trace_fmt(level, op_args.tcu.fmt_s);
+                `TRACE(level, ("."));
+                trace_fmt(level, op_args.tcu.fmt_d);
+                `TRACE(level, (".%0d.%0d", op_args.tcu.step_m, op_args.tcu.step_n));
+            end
+            INST_TCU_SP_MV_FORMAT: begin
+                `TRACE(level, ("SP_MV_FORMAT."));
                 trace_fmt(level, op_args.tcu.fmt_s);
                 `TRACE(level, ("."));
                 trace_fmt(level, op_args.tcu.fmt_d);

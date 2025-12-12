@@ -530,6 +530,31 @@ module VX_decode import VX_gpu_pkg::*; #(
                                 `USED_IREG (rs2);
                                 `USED_IREG (rs3);
                             end
+                            3'h1: begin // SP_WMMA
+                                ex_type = EX_TCU;
+                                op_type = INST_OP_BITS'(INST_TCU_SP_WMMA);
+                                op_args.tcu.fmt_s  = rs1[3:0];
+                                op_args.tcu.fmt_d  = rd[3:0];
+                                op_args.tcu.step_m = '0;
+                                op_args.tcu.step_n = '0;
+                                `USED_IREG (rd);
+                                `USED_IREG (rs1);
+                                `USED_IREG (rs2);
+                                `USED_IREG (rs3);
+                            end
+                            
+                            3'h2: begin // SP_MV_FORMAT
+                                ex_type = EX_TCU;
+                                op_type = INST_OP_BITS'(INST_TCU_SP_MV_FORMAT);
+                                /*
+                                 I could theoretically add a new member to tcu_args_t. BUT.
+                                 Any time I try to add and assign to a new member, it breaks the whole test.
+                                 It seems that it is being bitwise-indexed somewhere that I can't really fix.
+                                 So I opted for this instead.
+                                */
+                                op_args.tcu.fmt_s  = 4'b1111; // This one is not used.
+                                `USED_IREG (rs1);
+                            end
                             default:;
                         endcase
                     end

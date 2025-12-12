@@ -23,6 +23,7 @@ module VX_tcu_unit import VX_gpu_pkg::*, VX_tcu_pkg::*; #(
 
     // Inputs
     VX_dispatch_if.slave    dispatch_if [`ISSUE_WIDTH],
+    VX_dispatch_if.slave    tcu_csr_if  [`ISSUE_WIDTH],
 
     // Outputs
     VX_commit_if.master     commit_if [`ISSUE_WIDTH]
@@ -48,6 +49,21 @@ module VX_tcu_unit import VX_gpu_pkg::*, VX_tcu_pkg::*; #(
         .reset      (reset),
         .dispatch_if(dispatch_if),
         .execute_if (per_block_execute_if)
+    );
+    
+    VX_execute_if #(
+        .data_t (tcu_exe_t)
+    ) sep_exec_if[BLOCK_SIZE]();
+
+    VX_dispatch_unit #(
+        .BLOCK_SIZE (BLOCK_SIZE),
+        .NUM_LANES  (NUM_LANES),
+        .OUT_BUF    (3)
+    ) csr_unit (
+        .clk        (clk),
+        .reset      (reset),
+        .dispatch_if(tcu_csr_if),
+        .execute_if (sep_exec_if)
     );
 
     VX_result_if #(
@@ -87,7 +103,8 @@ module VX_tcu_unit import VX_gpu_pkg::*, VX_tcu_pkg::*; #(
             .clk        (clk),
             .reset      (reset),
             .execute_if (pe_execute_if[0]),
-            .result_if  (pe_result_if[0])
+            .result_if  (pe_result_if[0]),
+            .csr_if     (sep_exec_if[0])
         );
 
         VX_tcu_int #(

@@ -23,6 +23,7 @@ module VX_tcu_fp import VX_gpu_pkg::*, VX_tcu_pkg::*; #(
 
     // Inputs
     VX_execute_if.slave execute_if,
+    VX_execute_if.slave csr_if,
 
     // Outputs
     VX_result_if.master result_if
@@ -30,6 +31,7 @@ module VX_tcu_fp import VX_gpu_pkg::*, VX_tcu_pkg::*; #(
     `UNUSED_SPARAM (INSTANCE_ID);
 
     localparam MDATA_WIDTH = UUID_WIDTH + NW_WIDTH + PC_BITS + NUM_REGS_BITS;
+
 
 `ifdef TCU_DSP
     localparam FCVT_LATENCY = 1;
@@ -61,8 +63,9 @@ module VX_tcu_fp import VX_gpu_pkg::*, VX_tcu_pkg::*; #(
 
     wire [3:0] fmt_s = execute_if.data.op_args.tcu.fmt_s;
     wire [3:0] fmt_d = execute_if.data.op_args.tcu.fmt_d;
+    wire [3:0] fmt [WS-1:0];
 
-    `UNUSED_VAR ({step_m, step_n, fmt_s, fmt_d});
+    `UNUSED_VAR ({step_m, step_n, fmt_s, fmt_d, fmt});
 
     wire [MDATA_WIDTH-1:0] mdata_queue_din, mdata_queue_dout;
     wire mdata_queue_full;
@@ -121,11 +124,83 @@ module VX_tcu_fp import VX_gpu_pkg::*, VX_tcu_pkg::*; #(
 
     wire [TCU_TC_M-1:0][TCU_TC_N-1:0][`XLEN-1:0] d_val;
 
+    wire fmt_load_detected = (fmt_s == 4'b1111) && (execute_if.data.op_type == INST_TCU_SP_MV_FORMAT);
+
+    // NOTE: I know this is __lanes__, but I can't access it here. I also don't want to ruin the nice RTL that's already there. So this is hardcoded, unfortunately.
+    localparam WS = 8; 
+    logic [WS-1:0][`XLEN-1:0] fmt_vec; // This is 4 * 8 * 8 flops.
+    
+    always_ff @(posedge clk) begin
+        if (reset)
+            fmt_vec <= 0;
+        else
+            fmt_vec <= fmt_load_detected ? execute_if.data.rs1_data : fmt_vec;
+    end
+
+    genvar y; // running out of genvars.
+    generate
+        for (y = 0; y < WS; y++) begin : select_fmt
+            assign fmt[y] = fmt_vec[y][(step_m * TCU_K_STEPS + step_n) * 4 +: 4];
+        end
+    endgenerate
+
+    wire [WS-1:0][`XLEN-1:0] rs2_data_rearranged;
+
+    for (genvar k = 0; k < 4; k++) begin : rearrange
+        // lower half of the new 32-bit words
+        assign rs2_data_rearranged[k] = { execute_if.data.rs2_data[2*k + 1][15:0], execute_if.data.rs2_data[2*k][15:0] };
+
+        // upper half of the new 32-bit words
+        assign rs2_data_rearranged[k + 4] = { execute_if.data.rs2_data[2*k + 1][31:16], execute_if.data.rs2_data[2*k][31:16] };
+    end
+
+    logic [(WS / 2)-1:0][`XLEN-1:0] rs2_data_selected;
+
+    localparam NUM_BLOCKS = 8 * 2 / 4; // i_ratio / sparsity ratio
+    for (genvar blk = 0; blk < NUM_BLOCKS; blk++) begin : select_group 
+        always_comb begin
+            case (fmt_vec[blk][3:0])
+                4'b0011: begin
+                    rs2_data_selected[blk][15:0]  = rs2_data_rearranged[blk*2][15:0];
+                    rs2_data_selected[blk][31:16] = rs2_data_rearranged[blk*2][31:16];
+                end
+                4'b0101: begin
+                    rs2_data_selected[blk][15:0]  = rs2_data_rearranged[blk*2][15:0];
+                    rs2_data_selected[blk][31:16] = rs2_data_rearranged[blk*2 + 1][15:0];
+                end
+                4'b0110: begin
+                    rs2_data_selected[blk][15:0]  = rs2_data_rearranged[blk*2][31:16];
+                    rs2_data_selected[blk][31:16] = rs2_data_rearranged[blk*2 + 1][15:0];
+                end
+                4'b1001: begin
+                    rs2_data_selected[blk][15:0]  = rs2_data_rearranged[blk*2][15:0];
+                    rs2_data_selected[blk][31:16] = rs2_data_rearranged[blk*2 + 1][31:16];
+                end
+                4'b1010: begin
+                    rs2_data_selected[blk][15:0]  = rs2_data_rearranged[blk*2][31:16];
+                    rs2_data_selected[blk][31:16] = rs2_data_rearranged[blk*2 + 1][31:16];
+                end
+                4'b1100: begin
+                    rs2_data_selected[blk][15:0]  = rs2_data_rearranged[blk*2 + 1][15:0];
+                    rs2_data_selected[blk][31:16] = rs2_data_rearranged[blk*2 + 1][31:16];
+                end
+                default: begin
+                    rs2_data_selected[blk][15:0]  = rs2_data_rearranged[blk*2][15:0];
+                    rs2_data_selected[blk][31:16] = rs2_data_rearranged[blk*2][31:16];
+                end
+            endcase
+        end
+    end
+
+    // These may look bad, but they are all just interconnects that will get optimized out by the synth tool.
+    // Not much logic, except the fmt_vec decoding.
+    // Which is also easily optimizable, given that it is one-hot encoding.
+
     for (genvar i = 0; i < TCU_TC_M; ++i) begin : g_i
         for (genvar j = 0; j < TCU_TC_N; ++j) begin : g_j
 
             wire [TCU_TC_K-1:0][`XLEN-1:0] a_row = execute_if.data.rs1_data[a_off + i * TCU_TC_K +: TCU_TC_K];
-            wire [TCU_TC_K-1:0][`XLEN-1:0] b_col = execute_if.data.rs2_data[b_off + j * TCU_TC_K +: TCU_TC_K];
+            wire [TCU_TC_K-1:0][`XLEN-1:0] b_col = rs2_data_selected[b_off + j * TCU_TC_K +: TCU_TC_K];
             wire [`XLEN-1:0] c_val = execute_if.data.rs3_data[i * TCU_TC_N + j];
 
             wire [2:0] fmt_s_r, fmt_d_r;

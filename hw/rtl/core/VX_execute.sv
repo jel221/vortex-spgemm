@@ -93,8 +93,9 @@ module VX_execute import VX_gpu_pkg::*; #(
         .clk            (clk),
         .reset          (reset),
         .dispatch_if    (dispatch_if[EX_TCU * `ISSUE_WIDTH +: `ISSUE_WIDTH]),
-        .commit_if      (commit_if[EX_TCU * `ISSUE_WIDTH +: `ISSUE_WIDTH])
-    );
+        .commit_if      (commit_if[EX_TCU * `ISSUE_WIDTH +: `ISSUE_WIDTH]),
+        .tcu_csr_if     (dispatch_if[(EX_TCU + 1) * `ISSUE_WIDTH +: `ISSUE_WIDTH])
+    ); // This CSR if is not used anymore. It was a concept that was attempted but scrapped.
 `endif
 
     VX_sfu_unit #(

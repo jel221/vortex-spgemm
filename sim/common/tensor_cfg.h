@@ -97,7 +97,8 @@ template <uint32_t NT,      // number of threads per warp
           typename Ot = fp32, // output type (C,D)
           uint32_t XB = 4,  // vector element type size in bytes
           uint32_t NR = 8,  // registers per fragment
-          uint32_t DP = 0   // Dot-Product Length (0 for auto)
+          uint32_t DP = 0,   // Dot-Product Length (0 for auto)
+          bool sparse = true
           >
 struct wmma_config_t {
 private:
@@ -123,37 +124,46 @@ public:
 
   static constexpr uint32_t xtileM = 1u << tile_em;
   static constexpr uint32_t xtileN = 1u << tile_en;
-  static constexpr uint32_t xtileK = tile_cap / ((xtileM > xtileN) ? xtileM : xtileN);
+  static constexpr uint32_t xtileK = tile_cap / ((xtileM > xtileN) ? xtileM : xtileN) * (sparse ? 2 : 1);
 
   static constexpr uint32_t tcM = 1u << block_em;
   static constexpr uint32_t tcN = 1u << block_en;
-  static constexpr uint32_t tcK = (DP != 0) ? DP : (block_cap / ((tcM > tcN) ? tcM : tcN));
+  static constexpr uint32_t tcK_tmp = (DP != 0) ? DP : (block_cap / ((tcM > tcN) ? tcM : tcN)) * i_ratio;
+  static constexpr uint32_t tcK = sparse ? tcK_tmp * 2 : tcK_tmp;
 
   static constexpr uint32_t m_steps = xtileM / tcM;  // number of M steps per register
   static constexpr uint32_t n_steps = xtileN / tcN;  // number of N steps per register
-  static constexpr uint32_t k_steps = xtileK / tcK;  // number of K steps per register
+  static constexpr uint32_t k_steps = xtileK / tcK * i_ratio;  // number of K steps per register
 
   static constexpr uint32_t a_block_size = tcM * tcK;                 // size of A micro-tile
-  static constexpr uint32_t a_sub_blocks = block_cap / a_block_size;  // number of A micro-tiles per register
+  static constexpr uint32_t a_sub_blocks = block_cap * i_ratio * (sparse ? 2 : 1) / a_block_size;  // number of A micro-tiles per register
   static constexpr uint32_t a_sub_steps  = m_steps / a_sub_blocks;    // number of A sub-steps per register
 
   static constexpr uint32_t b_block_size = tcK * tcN;                 // size of B micro-tile
-  static constexpr uint32_t b_sub_blocks = block_cap / b_block_size;  // number of B micro-tiles per register
+  static constexpr uint32_t b_sub_blocks = block_cap * i_ratio / b_block_size;  // number of B micro-tiles per register
   static constexpr uint32_t b_sub_steps  = n_steps / b_sub_blocks;    // number of B sub-steps per register
 
-  static constexpr uint32_t NRA = (xtileM * xtileK) / NT; // Number of A registers
+  static constexpr uint32_t NRA = (xtileM * xtileK) / NT / (sparse ? 2 : 1); // Number of A registers
   static constexpr uint32_t NRB = (xtileN * xtileK) / NT; // Number of B registers
+  // 4 * 32 / 8 = 16
   static constexpr uint32_t NRC = (xtileM * xtileN) / NT; // Number of C registers
+
+  static_assert(!sparse || (NT == 8 || NT == 32), "Sparsity can only be used with NT 8 or 32");
 
   static_assert((m_steps / a_sub_blocks) != 0, "tcK is too small for tile A");
   static_assert((n_steps / b_sub_blocks) != 0, "tcK is too small for tile B");
 
-  static_assert((xtileM * xtileK <= tile_cap), "xtileM * xtileK <= tile_cap");
-  static_assert((xtileN * xtileK <= tile_cap), "xtileN * xtileK <= tile_cap");
+  //static_assert(m_steps == 2, "2 along the m dimension");
+  //static_assert(k_steps == 4, "4 along the k dimension");
+
+  // These things check if K fits. Ignore.
+  static_assert((xtileM * xtileK <= tile_cap * i_ratio * (sparse ? 2 : 1)), "xtileM * xtileK <= tile_cap");
+  //static_assert((xtileN * xtileK <= tile_cap * i_ratio), "xtileN * xtileK <= tile_cap");
   static_assert((xtileM * xtileN <= tile_cap), "xtileM * xtileN <= tile_cap");
 
-  static_assert((tcM * tcK <= block_cap), "tcM * tcK <= block_cap");
-  static_assert((tcN * tcK <= block_cap), "tcN * tcK <= block_cap");
+  // This one checks if Matrix A can be loaded in, which is doubled now for sparse A.
+  static_assert((tcM * tcK <= block_cap * i_ratio * (sparse ? 2 : 1)), "tcM * tcK <= block_cap");
+  static_assert((tcN * tcK <= block_cap * i_ratio), "tcN * tcK <= block_cap");
   static_assert((tcM * tcN <= block_cap), "tcM * tcN <= block_cap");
 
   static_assert((xtileM % tcM) == 0, "M,m divisibility");

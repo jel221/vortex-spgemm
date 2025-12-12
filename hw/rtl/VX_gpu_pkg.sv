@@ -116,7 +116,7 @@ package VX_gpu_pkg;
 	localparam EX_FPU = (EX_SFU + `EXT_F_ENABLED);
     localparam EX_TCU = (EX_FPU + `EXT_TCU_ENABLED);
 
-	localparam NUM_EX_UNITS = EX_TCU + 1;
+	localparam NUM_EX_UNITS = EX_TCU + 2;
 	localparam EX_BITS = `CLOG2(NUM_EX_UNITS);
 	localparam EX_WIDTH = `UP(EX_BITS);
 
@@ -440,6 +440,8 @@ package VX_gpu_pkg;
 `ifdef EXT_TCU_ENABLE
 
     localparam INST_TCU_WMMA = 4'h0;
+    localparam INST_TCU_SP_WMMA = 4'h1;
+    localparam INST_TCU_SP_MV_FORMAT = 4'h2;
     localparam INST_TCU_BITS = 4;
 
 `endif

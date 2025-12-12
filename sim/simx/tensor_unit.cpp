@@ -20,7 +20,7 @@
 using namespace vortex;
 
 namespace vt = vortex::tensor;
-using cfg = vt::wmma_config_t<NUM_THREADS>;
+using cfg = vt::wmma_config_t<NUM_THREADS, vt::fp16, vt::fp32, 4, 8, 0, true>;
 
 inline uint64_t nan_box(uint32_t value) {
   return value | 0xffffffff00000000;
@@ -94,9 +94,9 @@ struct FEDP {
   for (uint32_t z = 0; z < cfg::tcK; ++z) {
     auto a = reinterpret_cast<const itype *>(&a_row[z].u32);
     auto b = reinterpret_cast<const itype *>(&b_col[z].u32);
-    for (uint32_t i = 0; i < i_ratio; ++i) {
-      acc = FMA<It, Ot>::eval(a[i], b[i], acc);
-    }
+    //std::cout << "FEDP a " << *a << std::endl;
+    //std::cout << "FEDP b " << *b << std::endl;
+    acc = FMA<It, Ot>::eval(*a, *b, acc);
   }
   return bit_cast<uint32_t>(acc);
   }
@@ -142,6 +142,18 @@ struct FEDP<vt::uint4, vt::int32>{
   }
 };
 
+template <>
+struct FMA<vt::fp32, vt::fp32> {
+  static float eval(uint32_t a, uint32_t b, float c) {
+    auto xa = rv_utof_s(a, 0, nullptr);
+    auto xb = rv_utof_s(b, 0, nullptr);
+    auto xab= rv_fmul_s(xa, xb, 0, nullptr);
+    auto xc = bit_cast<uint32_t>(c);
+    auto xd = rv_fadd_s(xab, xc, 0, nullptr);
+    return bit_cast<float>(xd);
+  }
+};
+
 using PFN_FEDP = uint32_t (*)(const reg_data_t*, const reg_data_t*, uint32_t);
 
 static PFN_FEDP select_FEDP(uint32_t IT, uint32_t OT) {
@@ -152,6 +164,8 @@ static PFN_FEDP select_FEDP(uint32_t IT, uint32_t OT) {
       return FEDP<vt::fp16, vt::fp32>::eval;
     case vt::bf16::id:
       return FEDP<vt::bf16, vt::fp32>::eval;
+    case vt::fp32::id:
+      return FEDP<vt::fp32, vt::fp32>::eval;
     default:
       std::cout << "Error: unsupported mma format: " << IT << " -> " << OT << "!" << std::endl;
       std::abort();
@@ -227,6 +241,9 @@ public:
       case TcuType::WMMA:
         delay = 4;
         break;
+      case TcuType::NOP:
+        delay = 2;
+        break;
       default:
         std::abort();
       }
@@ -244,20 +261,72 @@ public:
             const std::vector<reg_data_t>& rs1_data,
             const std::vector<reg_data_t>& rs2_data,
             const std::vector<reg_data_t>& rs3_data,
+            const std::vector<reg_data_t>& af_data,
             std::vector<reg_data_t>& rd_data,
             ExeTraceData* trace_data) {
     __unused(wid);
     __unused(trace_data);
+
+    //for (auto d : af_data)
+    //    std::cout << d.u32 << std::endl;
+
+    //std::cout << af_data.size() << std::endl;
 
     auto fedp = select_FEDP(fmt_s, fmt_d);
 
     uint32_t a_off = (step_m % cfg::a_sub_blocks) * cfg::a_block_size;
     uint32_t b_off = (step_n % cfg::b_sub_blocks) * cfg::b_block_size;
 
+    std::vector<reg_data_t> rs1_data_unpacked;
+    for (int i = 0; i < rs1_data.size(); i++) {
+        uint32_t packed = rs1_data[i].u32;
+        uint16_t arr[2] = {packed & 0xffff, packed >> 16 & 0xffff};
+        int q = 0;
+        auto encoding = af_data[i].u8;
+        for (int j = 0; j < 4; j++) {
+            reg_data_t dat;
+            if (encoding & (1 << j)) {
+                dat.u16 = arr[q++];
+                rs1_data_unpacked.push_back(dat);
+            } else {
+                dat.u16 = 0;
+                rs1_data_unpacked.push_back(dat);
+            }
+        }
+    }
+
+    //for (auto d : rs1_data_unpacked)
+    //    std::cout << "RS1 " << d.u16 << std::endl;
+
+    std::vector<reg_data_t> rs2_data_unpacked;
+    for (int i = 0; i < rs2_data.size(); i++) {
+        uint32_t packed = rs2_data[i].u32;
+        reg_data_t dat1;
+        dat1.u16 = packed & 0xffff;
+
+        rs2_data_unpacked.push_back(dat1);
+    }
+
+    for (int i = 0; i < rs2_data.size(); i++) {
+        uint32_t packed = rs2_data[i].u32;
+        reg_data_t dat2;
+        dat2.u16 = packed >> 16 & 0xffff;
+
+        rs2_data_unpacked.push_back(dat2);
+    }
+
+    //for (auto d : rs2_data_unpacked)
+    //    std::cout << "RS2 " << d.u16 << std::endl;
+    //
+    //std::cout << "One core" << std::endl;
+
+    //std::cout << af_data.size() << std::endl;
+
+    // tcM = f
     for (uint32_t i = 0; i < cfg::tcM; ++i) {
       for (uint32_t j = 0; j < cfg::tcN; ++j) {
-        auto a_row = rs1_data.data() + a_off + i * cfg::tcK;
-        auto b_col = rs2_data.data() + b_off + j * cfg::tcK;
+        auto a_row = rs1_data_unpacked.data() + i * cfg::tcK;
+        auto b_col = rs2_data_unpacked.data() + j * cfg::tcK;
         auto c_val = rs3_data.at(i * cfg::tcN + j).u32;
         auto d_val = fedp(a_row, b_col, c_val);
         rd_data.at(i * cfg::tcN + j).u64 = nan_box(d_val);
@@ -334,7 +403,8 @@ void TensorUnit::wmma(uint32_t wid,
                       const std::vector<reg_data_t>& rs1_data,
                       const std::vector<reg_data_t>& rs2_data,
                       const std::vector<reg_data_t>& rs3_data,
+                      const std::vector<reg_data_t>& af_data,
                       std::vector<reg_data_t>& rd_data,
                       ExeTraceData* trace_data) {
-  impl_->wmma(wid, fmt_s, fmt_d, step_m, step_n, rs1_data, rs2_data, rs3_data, rd_data, trace_data);
+  impl_->wmma(wid, fmt_s, fmt_d, step_m, step_n, rs1_data, rs2_data, rs3_data, af_data, rd_data, trace_data);
 }
