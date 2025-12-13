@@ -1076,7 +1076,7 @@ void Emulator::decode(uint32_t code, uint32_t wid, uint64_t uuid) {
       }
       ibuffer.push_back(instr);
     } break;
-  //#ifdef EXT_TCU_ENABLE
+  #ifdef EXT_TCU_ENABLE
     case 2: {
       switch (funct3) {
       case 0: { // WMMA
@@ -1163,7 +1163,7 @@ void Emulator::decode(uint32_t code, uint32_t wid, uint64_t uuid) {
         std::abort();
       }
     } break;
-  //#endif
+  #endif
     default:
       std::abort();
     }

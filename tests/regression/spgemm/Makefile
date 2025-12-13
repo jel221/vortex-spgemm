@@ -13,6 +13,4 @@ CXXFLAGS += -I$(THIRD_PARTY_DIR)/softfloat/source/include
 
 LDFLAGS += $(THIRD_PARTY_DIR)/softfloat/build/Linux-x86_64-GCC/softfloat.a
 
-OPTS ?= -n64
-
 include ../common.mk
